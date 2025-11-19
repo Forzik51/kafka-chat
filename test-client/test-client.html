@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <title>Kafka Chat Test Client</title>
+
+    <!-- SockJS та STOMP з CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/sockjs-client@1/dist/sockjs.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/stompjs@2.3.3/lib/stomp.min.js"></script>
+
+    <style>
+        body {
+            font-family: sans-serif;
+            margin: 20px;
+        }
+        #messages {
+            border: 1px solid #ccc;
+            padding: 10px;
+            height: 300px;
+            overflow-y: auto;
+            margin-bottom: 10px;
+            background: #fafafa;
+        }
+        .msg-history {
+            color: #777;
+        }
+        .msg-live {
+            color: #000;
+        }
+        .msg-system {
+            color: #008000;
+            font-style: italic;
+        }
+        #status {
+            margin-bottom: 10px;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+<h1>Test Chat Client</h1>
+
+<label>
+    Room ID:
+    <input id="roomId" value="room-123" />
+</label>
+<button onclick="reconnect()">Connect</button>
+
+<div id="status" class="msg-system">Not connected</div>
+
+<div id="messages"></div>
+
+<input id="text" placeholder="Message..." style="width: 70%;" />
+<button onclick="send()">Send</button>
+
+<script>
+    // бекенд Spring Boot
+    const BACKEND_URL = 'http://localhost:8081';
+
+    let stompClient = null;
+    let currentRoomId = null;
+
+    function logMessage(html, cssClass) {
+        const div = document.getElementById('messages');
+        const p = document.createElement('p');
+        p.className = cssClass || '';
+        p.innerHTML = html;
+        div.appendChild(p);
+        div.scrollTop = div.scrollHeight;
+    }
+
+    function setStatus(text) {
+        document.getElementById('status').textContent = text;
+    }
+
+    function connect(roomId) {
+        currentRoomId = roomId;
+        setStatus('Connecting to ' + roomId + ' ...');
+
+        const socket = new SockJS(BACKEND_URL + '/ws-chat');
+        stompClient = Stomp.over(socket);
+        stompClient.debug = null; // вимкнути шум у консолі
+
+        stompClient.connect({}, function (frame) {
+            setStatus('Connected. Subscribed to room: ' + roomId);
+            logMessage('Connected: ' + frame, 'msg-system');
+
+            // Підписка на кімнату
+            stompClient.subscribe('/topic/rooms/' + roomId, function (msg) {
+                const body = JSON.parse(msg.body);
+                logMessage('<b>' + body.userId + ':</b> ' + body.text, 'msg-live');
+            });
+
+            // Тягнемо історію через REST
+            fetch(BACKEND_URL + '/api/rooms/' + roomId + '/history')
+                .then(r => r.json())
+                .then(list => {
+                    if (list.length > 0) {
+                        logMessage('--- history (' + list.length + ' messages) ---', 'msg-system');
+                    }
+
+                    list.forEach(m => {
+                        logMessage(
+                            '<span class="msg-history">(history)</span> <b>' +
+                            m.userId +
+                            ':</b> ' +
+                            m.text,
+                            'msg-history'
+                        );
+                    });
+                })
+                .catch(err => {
+                    logMessage('Error loading history: ' + err, 'msg-system');
+                });
+
+        }, function (error) {
+            setStatus('Connection error');
+            logMessage('Connection error: ' + error, 'msg-system');
+        });
+    }
+
+    function reconnect() {
+        const roomId = document.getElementById('roomId').value || 'room-123';
+        if (stompClient && stompClient.connected) {
+            stompClient.disconnect(() => {
+                setStatus('Disconnected, reconnecting...');
+                connect(roomId);
+            });
+        } else {
+            connect(roomId);
+        }
+    }
+
+    function send() {
+        const textInput = document.getElementById('text');
+        const text = textInput.value.trim();
+        if (!text || !stompClient || !stompClient.connected || !currentRoomId) {
+            return;
+        }
+
+        stompClient.send(
+            '/app/rooms/' + currentRoomId + '/send',
+            { 'content-type': 'application/json' },
+            JSON.stringify({ text })
+        );
+        textInput.value = '';
+    }
+
+    // автоматичне підключення при завантаженні сторінки
+    window.addEventListener('load', () => {
+        const roomId = document.getElementById('roomId').value || 'room-123';
+        connect(roomId);
+    });
+</script>
+</body>
+</html>
